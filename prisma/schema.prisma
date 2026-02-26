@@ -1,0 +1,220 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ========== 枚举类型 ==========
+
+enum Subject {
+  CHINESE      // 语文
+  MATH         // 数学
+  ENGLISH      // 英语
+  PHYSICS      // 物理
+  CHEMISTRY    // 化学
+  BIOLOGY      // 生物
+  HISTORY      // 历史
+  GEOGRAPHY    // 地理
+  POLITICS     // 政治
+  SCIENCE      // 科学 (小学)
+}
+
+enum QuestionType {
+  CHOICE       // 选择题
+  FILL_BLANK   // 填空题
+  SHORT_ANSWER // 简答题
+  CALCULATION  // 计算题
+  PROOF        // 证明题
+  ESSAY        // 作文
+  OTHER        // 其他
+}
+
+enum OcrStatus {
+  PENDING      // 待识别
+  PROCESSING   // 识别中
+  COMPLETED    // 已完成
+  FAILED       // 失败
+}
+
+enum CorrectionStatus {
+  PENDING      // 待批改
+  PROCESSING   // 批改中
+  COMPLETED    // 已完成
+  FAILED       // 失败
+}
+
+enum PracticeType {
+  SIMILAR      // 举一反三 (基于错题的相似题)
+  REVIEW       // 综合复习 (期末/期中)
+  TARGETED     // 专项练习 (针对某个知识点)
+}
+
+enum PracticeStatus {
+  PENDING      // 未开始
+  IN_PROGRESS  // 进行中
+  COMPLETED    // 已完成
+}
+
+// ========== 数据模型 ==========
+
+// 用户表
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String?
+  password      String
+  grade         String?      // 年级 (如 "小学三年级", "初中一年级")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  
+  homeworks     Homework[]
+  mistakes      Mistake[]
+  practices     Practice[]
+  sessions      Session[]
+  accounts      Account[]
+}
+
+// NextAuth Session
+model Session {
+  id            String   @id @default(cuid())
+  sessionToken  String   @unique
+  userId        String
+  expires       DateTime
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// NextAuth Account (OAuth)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+// 作业表
+model Homework {
+  id               String            @id @default(cuid())
+  userId           String
+  title            String            // 作业标题 (如 "数学第三章作业")
+  subject          Subject           // 学科
+  imageUrl         String            // OSS 图片 URL
+  imagePath        String            // OSS 存储路径
+  ocrText          String?           // OCR 识别的原始文本
+  ocrResult        String?           // OCR 结构化结果 (JSON)
+  ocrStatus        OcrStatus         @default(PENDING)
+  correctionStatus CorrectionStatus  @default(PENDING)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questions     Question[]
+  
+  @@index([userId, createdAt])
+}
+
+// 题目表
+model Question {
+  id             String       @id @default(cuid())
+  homeworkId     String
+  questionNumber String?      // 题号 (如 "1", "2(1)")
+  questionType   QuestionType // 题型
+  content        String       // 题目内容
+  options        String?      // 选项 (JSON, 仅选择题)
+  studentAnswer  String?      // 学生答案
+  correctAnswer  String?      // 正确答案
+  isCorrect      Boolean?     // 是否正确
+  explanation    String?      // 解析
+  knowledgePoints String?     // 知识点 (JSON 数组)
+  difficulty     Int          @default(3)  // 难度 (1-5)
+  createdAt      DateTime     @default(now())
+  
+  homework      Homework     @relation(fields: [homeworkId], references: [id], onDelete: Cascade)
+  mistake       Mistake?
+  
+  @@index([homeworkId])
+}
+
+// 错题表
+model Mistake {
+  id              String       @id @default(cuid())
+  userId          String
+  questionId      String       @unique
+  subject         Subject      // 学科
+  questionType    QuestionType // 题型
+  content         String       // 题目内容
+  studentAnswer   String       // 学生答案
+  correctAnswer   String       // 正确答案
+  explanation     String       // 详细解析
+  knowledgePoints String       // 知识点标签 (JSON 数组)
+  difficulty      Int          @default(3)  // 难度 1-5
+  mistakeCount    Int          @default(1)  // 错误次数
+  lastMistakeAt   DateTime     @default(now())  // 最后一次出错时间
+  mastered        Boolean      @default(false)  // 是否已掌握
+  createdAt       DateTime     @default(now())
+  
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question      Question     @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, subject, mastered])
+  @@index([userId, lastMistakeAt])
+}
+
+// 知识点表
+model KnowledgePoint {
+  id           String   @id @default(cuid())
+  name         String   // 知识点名称 (如 "二元一次方程")
+  subject      Subject  // 学科
+  grade        String?  // 适用年级
+  description  String   // 知识点说明
+  tips         String?  // 易错提示
+  examples     String?  // 典型例题 (JSON)
+  mistakeCount Int      @default(0)  // 关联的错题数量
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@unique([name, subject])
+  @@index([subject, mistakeCount])
+}
+
+// 练习卷表
+model Practice {
+  id           String         @id @default(cuid())
+  userId       String
+  title        String         // 练习卷标题
+  subject      Subject        // 学科
+  practiceType PracticeType   // 练习类型
+  questions    String         // 题目内容 (JSON)
+  totalScore   Int            // 总分
+  userScore    Int?           // 用户得分
+  status       PracticeStatus @default(PENDING)
+  completedAt  DateTime?      // 完成时间
+  createdAt    DateTime       @default(now())
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, createdAt])
+}
+
+// 速率限制表
+model RateLimit {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  count     Int      @default(0)
+  resetAt   DateTime
+  createdAt DateTime @default(now())
+}
