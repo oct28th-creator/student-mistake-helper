@@ -13,42 +13,75 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 检查 OSS 配置
-    if (!isOSSConfigured()) {
-      return NextResponse.json(
-        { error: 'OSS 未配置,请联系管理员' },
-        { status: 500 }
-      );
+    const contentType = request.headers.get('content-type') || '';
+
+    // 模式一：OSS 直传 (获取签名)
+    if (contentType.includes('application/json') && isOSSConfigured()) {
+      const body = await request.json();
+      const { fileName } = body;
+
+      if (!fileName) {
+        return NextResponse.json(
+          { error: '请提供文件名' },
+          { status: 400 }
+        );
+      }
+
+      const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'];
+      const ext = fileName.split('.').pop()?.toLowerCase();
+      if (!ext || !allowedExtensions.includes(ext)) {
+        return NextResponse.json(
+          { error: '不支持的文件类型,请上传图片文件' },
+          { status: 400 }
+        );
+      }
+
+      const signature = await generateUploadSignature(fileName, session.user.id);
+      return NextResponse.json({ mode: 'oss', ...signature });
     }
 
-    const body = await request.json();
-    const { fileName } = body;
+    // 模式二：直接上传到服务器 (OSS 未配置时的回退方案)
+    const formData = await request.formData();
+    const file = formData.get('file') as File | null;
 
-    if (!fileName) {
+    if (!file) {
       return NextResponse.json(
-        { error: '请提供文件名' },
+        { error: '请选择要上传的文件' },
         { status: 400 }
       );
     }
 
     // 验证文件类型
-    const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'];
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (!ext || !allowedExtensions.includes(ext)) {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic'];
+    if (!allowedTypes.includes(file.type)) {
       return NextResponse.json(
         { error: '不支持的文件类型,请上传图片文件' },
         { status: 400 }
       );
     }
 
-    // 生成上传签名
-    const signature = await generateUploadSignature(fileName, session.user.id);
+    // 限制文件大小 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      return NextResponse.json(
+        { error: '文件大小不能超过 10MB' },
+        { status: 400 }
+      );
+    }
 
-    return NextResponse.json(signature);
+    // 转为 base64 data URL
+    const arrayBuffer = await file.arrayBuffer();
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const dataUrl = `data:${file.type};base64,${base64}`;
+
+    return NextResponse.json({
+      mode: 'local',
+      imageUrl: dataUrl,
+      key: `local/${session.user.id}/${Date.now()}-${file.name}`,
+    });
   } catch (error) {
-    console.error('生成上传签名错误:', error);
+    console.error('上传错误:', error);
     return NextResponse.json(
-      { error: '获取上传签名失败' },
+      { error: '上传失败,请稍后重试' },
       { status: 500 }
     );
   }

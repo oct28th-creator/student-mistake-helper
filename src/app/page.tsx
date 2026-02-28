@@ -79,40 +79,60 @@ export default function HomePage() {
     setUploadStatus('idle');
 
     try {
-      // 1. 获取上传签名
+      // 1. 上传图片
+      let imageUrl: string;
+      let imagePath: string;
+
+      // 先尝试获取 OSS 签名，失败则直传服务器
       const signatureRes = await fetch('/api/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileName: selectedFile.name }),
       });
 
-      if (!signatureRes.ok) {
-        const error = await signatureRes.json();
-        throw new Error(error.error || '获取上传签名失败');
+      const signatureData = await signatureRes.json();
+
+      if (signatureRes.ok && signatureData.mode === 'oss') {
+        // OSS 直传模式
+        const formData = new FormData();
+        formData.append('key', signatureData.key);
+        formData.append('policy', signatureData.policy);
+        formData.append('OSSAccessKeyId', signatureData.accessId);
+        formData.append('signature', signatureData.signature);
+        formData.append('file', selectedFile);
+
+        const uploadRes = await fetch(signatureData.host, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!uploadRes.ok) {
+          throw new Error('上传图片到 OSS 失败');
+        }
+
+        imageUrl = `${signatureData.host}/${signatureData.key}`;
+        imagePath = signatureData.key;
+      } else {
+        // 直传服务器模式（OSS 未配置时的回退）
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        const uploadRes = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!uploadRes.ok) {
+          const error = await uploadRes.json();
+          throw new Error(error.error || '上传图片失败');
+        }
+
+        const uploadData = await uploadRes.json();
+        imageUrl = uploadData.imageUrl;
+        imagePath = uploadData.key;
       }
 
-      const signature = await signatureRes.json();
-
-      // 2. 直接上传到 OSS
-      const formData = new FormData();
-      formData.append('key', signature.key);
-      formData.append('policy', signature.policy);
-      formData.append('OSSAccessKeyId', signature.accessId);
-      formData.append('signature', signature.signature);
-      formData.append('file', selectedFile);
-
-      const uploadRes = await fetch(signature.host, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!uploadRes.ok) {
-        throw new Error('上传图片失败');
-      }
-
-      const imageUrl = `${signature.host}/${signature.key}`;
-
-      // 3. 创建作业记录
+      // 2. 创建作业记录
       const homeworkRes = await fetch('/api/homework', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -120,7 +140,7 @@ export default function HomePage() {
           title,
           subject,
           imageUrl,
-          imagePath: signature.key,
+          imagePath: imagePath,
         }),
       });
 
