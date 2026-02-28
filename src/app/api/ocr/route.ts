@@ -4,6 +4,51 @@ import { qwen, QWEN_MODELS, isQwenConfigured } from '@/lib/qwen';
 import { OCR_SYSTEM_PROMPT, buildOcrUserPrompt, OcrResult } from '@/lib/prompts/ocr';
 import { prisma } from '@/lib/db';
 import { generateText } from 'ai';
+import crypto from 'crypto';
+
+// Vercel Serverless 函数最大执行时间 (秒)
+export const maxDuration = 60;
+
+// 从 OSS 下载图片并转为 base64
+async function fetchImageAsBase64(imageUrl: string): Promise<string> {
+  // 如果已经是 data URL，直接返回
+  if (imageUrl.startsWith('data:')) {
+    return imageUrl;
+  }
+
+  // 如果是 OSS 私有 bucket，需要生成签名 URL
+  let fetchUrl = imageUrl;
+  if (imageUrl.includes('.aliyuncs.com/') && process.env.OSS_ACCESS_KEY_ID) {
+    fetchUrl = generateSignedOssUrl(imageUrl);
+  }
+
+  const res = await fetch(fetchUrl);
+  if (!res.ok) {
+    throw new Error(`下载图片失败: ${res.status} ${res.statusText}`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString('base64');
+  const contentType = res.headers.get('content-type') || 'image/jpeg';
+  return `data:${contentType};base64,${base64}`;
+}
+
+// 为 OSS 私有 bucket 生成签名访问 URL
+function generateSignedOssUrl(imageUrl: string): string {
+  const url = new URL(imageUrl);
+  const bucket = process.env.OSS_BUCKET!;
+  const objectKey = decodeURIComponent(url.pathname.slice(1)); // 去掉开头的 /
+  const expires = Math.floor(Date.now() / 1000) + 3600; // 1小时过期
+
+  const stringToSign = `GET\n\n\n${expires}\n/${bucket}/${objectKey}`;
+  const signature = crypto
+    .createHmac('sha1', process.env.OSS_ACCESS_KEY_SECRET!)
+    .update(stringToSign)
+    .digest('base64');
+
+  const signedUrl = `${imageUrl}?OSSAccessKeyId=${encodeURIComponent(process.env.OSS_ACCESS_KEY_ID!)}&Expires=${expires}&Signature=${encodeURIComponent(signature)}`;
+  return signedUrl;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -53,6 +98,9 @@ export async function POST(request: NextRequest) {
     });
 
     try {
+      // 下载图片并转为 base64（解决 OSS 私有 bucket 无法被 AI 模型直接访问的问题）
+      const imageBase64 = await fetchImageAsBase64(imageUrl);
+
       // 调用通义千问 VL 模型进行 OCR
       const result = await generateText({
         model: qwen(QWEN_MODELS.OCR),
@@ -65,7 +113,7 @@ export async function POST(request: NextRequest) {
             role: 'user',
             content: [
               { type: 'text', text: buildOcrUserPrompt() },
-              { type: 'image', image: imageUrl },
+              { type: 'image', image: imageBase64 },
             ],
           },
         ],

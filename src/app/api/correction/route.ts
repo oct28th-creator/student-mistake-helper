@@ -5,6 +5,8 @@ import { CORRECTION_SYSTEM_PROMPT, buildCorrectionUserPrompt, CorrectionResult }
 import { prisma } from '@/lib/db';
 import { generateText } from 'ai';
 
+export const maxDuration = 60;
+
 // 批改单个题目
 export async function POST(request: NextRequest) {
   try {
