@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { generateUploadSignature, isOSSConfigured } from '@/lib/oss';
+import { isOSSConfigured } from '@/lib/oss';
+import crypto from 'crypto';
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,34 +14,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const contentType = request.headers.get('content-type') || '';
-
-    // 模式一：OSS 直传 (获取签名)
-    if (contentType.includes('application/json') && isOSSConfigured()) {
-      const body = await request.json();
-      const { fileName } = body;
-
-      if (!fileName) {
-        return NextResponse.json(
-          { error: '请提供文件名' },
-          { status: 400 }
-        );
-      }
-
-      const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'];
-      const ext = fileName.split('.').pop()?.toLowerCase();
-      if (!ext || !allowedExtensions.includes(ext)) {
-        return NextResponse.json(
-          { error: '不支持的文件类型,请上传图片文件' },
-          { status: 400 }
-        );
-      }
-
-      const signature = await generateUploadSignature(fileName, session.user.id);
-      return NextResponse.json({ mode: 'oss', ...signature });
-    }
-
-    // 模式二：直接上传到服务器 (OSS 未配置时的回退方案)
     const formData = await request.formData();
     const file = formData.get('file') as File | null;
 
@@ -68,20 +41,56 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 转为 base64 data URL
     const arrayBuffer = await file.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const buffer = Buffer.from(arrayBuffer);
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+    const date = new Date();
+    const dir = `homework/${session.user.id}/${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const fileName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+    const key = `${dir}/${fileName}`;
+
+    // 如果 OSS 已配置，上传到 OSS
+    if (isOSSConfigured()) {
+      const ossHost = `https://${process.env.OSS_BUCKET}.${process.env.OSS_REGION}.aliyuncs.com`;
+
+      // 使用 PUT 方式服务端直接上传到 OSS
+      const dateStr = new Date().toUTCString();
+      const contentType = file.type;
+      const stringToSign = `PUT\n\n${contentType}\n${dateStr}\n/${process.env.OSS_BUCKET}/${key}`;
+      const signature = crypto
+        .createHmac('sha1', process.env.OSS_ACCESS_KEY_SECRET!)
+        .update(stringToSign)
+        .digest('base64');
+
+      const ossRes = await fetch(`${ossHost}/${key}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+          'Date': dateStr,
+          'Authorization': `OSS ${process.env.OSS_ACCESS_KEY_ID}:${signature}`,
+        },
+        body: buffer,
+      });
+
+      if (!ossRes.ok) {
+        const errText = await ossRes.text();
+        console.error('OSS 上传失败:', ossRes.status, errText);
+        throw new Error('OSS 上传失败');
+      }
+
+      const imageUrl = `${ossHost}/${key}`;
+      return NextResponse.json({ imageUrl, key });
+    }
+
+    // OSS 未配置时，转为 base64 data URL
+    const base64 = buffer.toString('base64');
     const dataUrl = `data:${file.type};base64,${base64}`;
 
-    return NextResponse.json({
-      mode: 'local',
-      imageUrl: dataUrl,
-      key: `local/${session.user.id}/${Date.now()}-${file.name}`,
-    });
+    return NextResponse.json({ imageUrl: dataUrl, key });
   } catch (error) {
     console.error('上传错误:', error);
     return NextResponse.json(
-      { error: '上传失败,请稍后重试' },
+      { error: error instanceof Error ? error.message : '上传失败,请稍后重试' },
       { status: 500 }
     );
   }
